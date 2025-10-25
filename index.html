@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H&W Band Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+        .emergency-blink {
+            animation: blinker 0.5s linear infinite;
+        }
+        body { font-family: sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div id="monitor-container" class="w-full max-w-md p-6 bg-white rounded-lg shadow-xl text-center transition-colors duration-500">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">H&W Band Monitor</h1>
+        <p id="connection-status" class="text-sm font-semibold text-green-600 mb-6">Status: Connecting...</p>
+
+        <div id="data-display" class="space-y-4 text-left">
+            <div class="flex justify-between items-center border-b pb-2">
+                <span class="text-gray-600 font-medium">TEMP:</span>
+                <span id="temp-value" class="text-2xl font-bold text-gray-800">-- °C</span>
+            </div>
+            <div class="flex justify-between items-center border-b pb-2">
+                <span class="text-gray-600 font-medium">HR:</span>
+                <span id="hr-value" class="text-2xl font-bold text-gray-800">-- BPM</span>
+            </div>
+            <div class="flex justify-between items-center border-b pb-2">
+                <span class="text-gray-600 font-medium">SpO2:</span>
+                <span id="spo2-value" class="text-2xl font-bold text-gray-800">-- %</span>
+            </div>
+            <div class="flex justify-between items-center pt-2">
+                <span class="text-gray-600 font-medium">STATE:</span>
+                <span id="state-value" class="text-xl font-bold text-gray-800">--</span>
+            </div>
+
+            <div id="emergency-location-display" class="hidden mt-4 pt-4 border-t border-red-300 text-center">
+                 <p class="text-sm font-bold text-white">LAST KNOWN LOCATION:</p>
+                 <p id="emergency-gps-coords" class="text-lg font-mono text-white">-- , --</p>
+                 <a id="emergency-map-link" href="#" target="_blank" class="mt-1 inline-block text-sm text-blue-200 hover:text-blue-100 underline">
+                     Open Map
+                 </a>
+            </div>
+
+        </div>
+
+        <div id="disconnected-display" class="hidden mt-6 text-center">
+            <p class="text-xl font-bold text-red-600">DEVICE DISCONNECTED</p>
+            <p class="text-gray-600 mt-2">Last Known Location:</p>
+            <p id="gps-coords" class="text-lg font-mono text-blue-700">-- , --</p>
+            <a id="map-link" href="#" target="_blank" class="mt-2 inline-block px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition hidden">
+                Open in Google Maps
+            </a>
+        </div>
+
+        <p id="last-update" class="text-xs text-gray-400 mt-6">Last update: Never</p>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-database.js";
+
+        const firebaseConfig = {
+          apiKey: "AIzaSyAGdi0EIOvXnuG9Q8azmN3SHlFLbRZ4tPU",
+          authDomain: "handwband.firebaseapp.com",
+          databaseURL: "https://handwband-default-rtdb.firebaseio.com",
+          projectId: "handwband",
+          storageBucket: "handwband.appspot.com",
+          messagingSenderId: "849714321007",
+          appId: "1:849714321007:web:87d7534d170b986d029f9a"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
+        const sensorDataRef = ref(database, '/sensorData');
+
+        const container = document.getElementById('monitor-container');
+        const statusText = document.getElementById('connection-status');
+        const dataDisplay = document.getElementById('data-display');
+        const disconnectedDisplay = document.getElementById('disconnected-display');
+        const tempValue = document.getElementById('temp-value');
+        const hrValue = document.getElementById('hr-value');
+        const spo2Value = document.getElementById('spo2-value');
+        const stateValue = document.getElementById('state-value');
+        const gpsCoords = document.getElementById('gps-coords');
+        const mapLink = document.getElementById('map-link');
+        const lastUpdateText = document.getElementById('last-update');
+        const emergencyLocationDisplay = document.getElementById('emergency-location-display');
+        const emergencyGpsCoords = document.getElementById('emergency-gps-coords');
+        const emergencyMapLink = document.getElementById('emergency-map-link');
+
+        // --- State Variables ---
+        let lastUpdateTime = 0;
+        let currentFirebaseState = "OK";
+        let timeoutCheckInterval;
+        const DISCONNECT_TIMEOUT_MS = 5 * 60 * 1000;
+
+        // --- Firebase Listener ---
+        onValue(sensorDataRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                console.log("Firebase Data received:", data);
+                lastUpdateTime = Date.now();
+
+                // Update display values from Firebase
+                tempValue.textContent = data.BodyTemp !== undefined && data.BodyTemp !== -999.0 ? `${data.BodyTemp.toFixed(1)} °C` : '-- °C';
+                hrValue.textContent = data.HR !== undefined && data.HR !== -999.0 ? `${Math.round(data.HR)} BPM` : '-- BPM';
+                spo2Value.textContent = data.SpO2 !== undefined && data.SpO2 !== -999.0 ? `${Math.round(data.SpO2)} %` : '-- %';
+                stateValue.textContent = data.state || 'UNKNOWN';
+
+                // Update GPS for both disconnected and emergency displays
+                const lat = data.GPS_lat !== undefined ? data.GPS_lat : 0.0;
+                const lng = data.GPS_lng !== undefined ? data.GPS_lng : 0.0;
+                const gpsText = (lat !== 0.0 || lng !== 0.0) ? `${lat.toFixed(4)}, ${lng.toFixed(4)}` : 'N/A';
+                gpsCoords.textContent = gpsText;
+                emergencyGpsCoords.textContent = gpsText;
+
+                currentFirebaseState = (data.state || "OK").toUpperCase();
+                console.log("Current State from Firebase (Processed):", currentFirebaseState);
+
+                // Update map links
+                if (lat !== 0.0 || lng !== 0.0) {
+                    const mapUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+                    mapLink.href = mapUrl;
+                    mapLink.classList.remove('hidden');
+                    emergencyMapLink.href = mapUrl;
+                } else {
+                    mapLink.classList.add('hidden');
+                    emergencyMapLink.classList.add('hidden');
+                }
+
+                lastUpdateText.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+                showConnectedState();
+
+            } else {
+                console.log("No data found at Firebase path. Waiting...");
+                 if (statusText.textContent !== 'Status: Disconnected') {
+                    showDisconnectedState(true);
+                }
+            }
+        }, (error) => {
+            console.error("Firebase read failed: ", error);
+            statusText.textContent = 'Error: Firebase Connection Failed';
+            statusText.classList.remove('text-green-600', 'text-yellow-600');
+            statusText.classList.add('text-red-600');
+        });
+
+        // --- UI State Functions ---
+        function showConnectedState() {
+             if (statusText.textContent === 'Status: Disconnected' || statusText.textContent === 'Status: Waiting for data...') {
+                 console.log("Connection established/data received.");
+             }
+            dataDisplay.classList.remove('hidden');
+            disconnectedDisplay.classList.add('hidden'); 
+            checkEmergencyVisuals();
+        }
+
+        function showDisconnectedState(isInitialWait = false) {
+             if (isInitialWait) {
+                 statusText.textContent = 'Status: Waiting for data...';
+                 statusText.classList.remove('text-green-600', 'text-red-600');
+                 statusText.classList.add('text-yellow-600');
+             } else {
+                statusText.textContent = 'Status: Disconnected';
+                statusText.classList.remove('text-green-600', 'text-yellow-600');
+                statusText.classList.add('text-red-600');
+                disconnectedDisplay.classList.remove('hidden');
+             }
+            dataDisplay.classList.add('hidden');
+            stopEmergencyVisuals();
+        }
+
+        function checkEmergencyVisuals() {
+            console.log("Checking visuals for Firebase state:", currentFirebaseState);
+            if (currentFirebaseState === 'EMERGENCY') {
+                startEmergencyVisuals();
+            } else {
+                stopEmergencyVisuals();
+            }
+        }
+
+        function startEmergencyVisuals() {
+            console.log("Starting emergency visuals for: EMERGENCY");
+            container.classList.remove('bg-white', 'bg-gray-100');
+            container.classList.add('bg-red-500', 'emergency-blink');
+            statusText.classList.remove('text-green-600', 'text-yellow-600');
+            statusText.classList.add('text-white', 'font-extrabold');
+            statusText.textContent = '!!! EMERGENCY !!!';
+
+            // Show Emergency Location
+            dataDisplay.classList.remove('hidden');
+            emergencyLocationDisplay.classList.remove('hidden');
+            disconnectedDisplay.classList.add('hidden');
+             if (emergencyGpsCoords.textContent !== 'N/A') {
+                 emergencyMapLink.classList.remove('hidden');
+             } else {
+                 emergencyMapLink.classList.add('hidden');
+             }
+        }
+
+        function stopEmergencyVisuals() {
+            console.log("Stopping emergency visuals");
+            container.classList.remove('bg-red-500', 'emergency-blink');
+            container.classList.add('bg-white');
+            statusText.classList.remove('text-white', 'font-extrabold', 'text-red-600');
+
+            emergencyLocationDisplay.classList.add('hidden');
+
+            if (lastUpdateTime > 0 && (Date.now() - lastUpdateTime < DISCONNECT_TIMEOUT_MS)) {
+                 if (statusText.textContent !== 'Status: Connected') {
+                    statusText.textContent = 'Status: Connected';
+                    statusText.classList.add('text-green-600');
+                 }
+            } else if (lastUpdateTime === 0 && statusText.textContent !== 'Status: Waiting for data...') {
+                 showDisconnectedState(true);
+            } else if (lastUpdateTime > 0 && statusText.textContent !== 'Status: Disconnected'){
+                 showDisconnectedState();
+            }
+        }
+
+        // --- Disconnection Timeout Check ---
+        function checkTimeout() {
+            if (lastUpdateTime === 0 && statusText.textContent !== 'Status: Waiting for data...') return;
+            const timeSinceLastUpdate = Date.now() - lastUpdateTime;
+            if (timeSinceLastUpdate > DISCONNECT_TIMEOUT_MS) {
+                if (statusText.textContent !== 'Status: Disconnected' && statusText.textContent !== 'Status: Waiting for data...') {
+                    console.log("Timeout detected! Showing disconnected state.");
+                    showDisconnectedState();
+                }
+            } else {
+            }
+        }
+
+        showDisconnectedState(true); 
+        timeoutCheckInterval = setInterval(checkTimeout, 10000);
+
+    </script>
+</body>
+</html>
